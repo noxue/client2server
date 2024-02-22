@@ -32,20 +32,7 @@ where
     }
 }
 
-// #[derive(Serialize, Deserialize, PartialEq, Debug, Pack, UnPack)]
-// pub struct PacketHeader<T>
-// {
-//     pub flag: u16, // 标志位
-//     pub body_size: u64,
-//     pub pack_type: T, // 数据包类型
-// }
-
-// // 获取数据包头部长度
-// pub fn get_header_size<T>() -> usize {
-
-// }
-
-#[derive(Serialize, Deserialize, Default, PartialEq, Debug, Pack, UnPack)]
+#[derive(Serialize, Deserialize, PartialEq, Default, Debug, Pack, UnPack)]
 pub struct Header<T> {
     pub flag: u16, // 标志位
     pub body_size: u64,
@@ -62,6 +49,15 @@ where
             body_size,
             pack_type,
         }
+    }
+
+    // 获取数据包头部长度，首先读取头部，然后序列化，然后获取 body 长度
+    pub fn size() -> usize
+    where
+        T: Serialize + PartialEq + Debug + Sized + Default,
+    {
+        let header = Header::<T>::default();
+        header.pack().unwrap().len()
     }
 
     // 检测标志位是否正确
@@ -109,46 +105,44 @@ where
     }
 }
 
-// /// 获取数据
-// #[derive(Serialize, Deserialize, PartialEq, Debug, Pack, UnPack)]
-// pub struct Task {
-//     pub task_id: i32,         // 任务id，随机生成， 如果task_id=0 表示没有任务
-//     pub product_name: String, // 产品名
-// }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-// impl Task {
-//     // 根据task_id判断是否有任务
-//     pub fn has_task(&self) -> bool {
-//         self.task_id != 0
-//     }
+    #[derive(Serialize, Deserialize, PartialEq, Debug, Pack, UnPack)]
+    enum PackType {
+        Task,
+        TaskResult,
+    }
 
-//     pub fn new(task_id: i32, product_name: String) -> Task {
-//         Task {
-//             task_id,
-//             product_name,
-//         }
-//     }
-// }
+    impl Default for PackType {
+        fn default() -> Self {
+            PackType::Task
+        }
+    }
 
-// /// worker执行完任务后返回执行结果
-// #[derive(Serialize, Deserialize, PartialEq, Debug, Pack, UnPack)]
-// pub struct TaskResult {
-//     pub task_id: i32,                         // 任务id
-//     pub result: Result<i32, TaskResultError>, // 执行结果
-// }
+    #[derive(Serialize, Deserialize, PartialEq, Debug, Pack, UnPack)]
+    pub struct Task {
+        pub task_id: i32,         // 任务id，随机生成， 如果task_id=0 表示没有任务
+        pub product_name: String, // 产品名
+    }
 
-// // new
-// impl TaskResult {
-//     pub fn new(task_id: i32, result: Result<i32, TaskResultError>) -> TaskResult {
-//         TaskResult { task_id, result }
-//     }
-// }
-
-// // 任务结果失败类型
-// #[derive(Serialize, Deserialize, PartialEq, Debug, Pack, UnPack)]
-// pub enum TaskResultError {
-//     AccessDenied,    // 无法访问
-//     Banned,          // 被封禁
-//     ProductNotFound, // 产品不存在
-//     Timeout,         // 超时
-// }
+    #[test]
+    fn test_pack_unpack() {
+        let task = Task {
+            task_id: 1,
+            product_name: "test".to_string(),
+        };
+        let packet = Packet::new(PackType::Task, Some(task)).unwrap();
+        let data = packet.pack().unwrap();
+        // 读取头部
+        let header_size = Header::<PackType>::size();
+        let header = Header::<PackType>::unpack(&data[0..header_size]).unwrap();
+        assert_eq!(header.pack_type, PackType::Task);
+        assert!(header.check_flag());
+        // 读取数据
+        let task = Task::unpack(&data[header_size..]).unwrap();
+        assert_eq!(task.task_id, 1);
+        assert_eq!(task.product_name, "test".to_string());
+    }
+}
