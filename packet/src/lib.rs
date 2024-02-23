@@ -1,4 +1,6 @@
-use packet_macro::{Pack, UnPack};
+pub use packet_macro::{Packed, UnPacked};
+
+// use packet_macro::{Pack, UnPack};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fmt::Debug;
 
@@ -12,29 +14,9 @@ pub trait UnPack {
         Self: DeserializeOwned;
 }
 
-fn pack<T>(t: &T) -> Result<Vec<u8>, String>
-where
-    T: Serialize,
-{
-    match bincode::serialize(&t) {
-        Ok(v) => Ok(v),
-        Err(e) => Err(format!("{:?}", e)),
-    }
-}
-
-fn unpack<T>(encoded: &[u8]) -> Result<T, String>
-where
-    T: DeserializeOwned + PartialEq + Debug,
-{
-    match bincode::deserialize(encoded) {
-        Ok(v) => Ok(v),
-        Err(e) => Err(format!("{:?}", e)),
-    }
-}
-
-#[derive(Serialize, Deserialize, PartialEq, Default, Debug, Pack, UnPack)]
+#[derive(Serialize, Deserialize, PartialEq, Default, Debug, Packed, UnPacked)]
 pub struct Header<T> {
-    pub flag: u16, // 标志位
+    flag: u16, // 标志位
     pub body_size: u64,
     pub pack_type: T, // 数据包类型
 }
@@ -52,12 +34,12 @@ where
     }
 
     // 获取数据包头部长度，首先读取头部，然后序列化，然后获取 body 长度
-    pub fn size() -> usize
+    pub fn size() -> Result<usize, String>
     where
         T: Serialize + PartialEq + Debug + Sized + Default,
     {
         let header = Header::<T>::default();
-        header.pack().unwrap().len()
+        Ok(header.pack()?.len())
     }
 
     // 检测标志位是否正确
@@ -69,8 +51,8 @@ where
 /// 数据头
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct Packet<T> {
-    pub header: Header<T>,
-    pub data: Vec<u8>,
+    header: Header<T>,
+    data: Vec<u8>,
 }
 
 /// T 一个enum类型，表示数据包类型
@@ -109,7 +91,7 @@ where
 mod tests {
     use super::*;
 
-    #[derive(Serialize, Deserialize, PartialEq, Debug, Pack, UnPack)]
+    #[derive(Serialize, Deserialize, PartialEq, Debug, Packed, UnPacked)]
     enum PackType {
         Task,
         TaskResult,
@@ -121,7 +103,7 @@ mod tests {
         }
     }
 
-    #[derive(Serialize, Deserialize, PartialEq, Debug, Pack, UnPack)]
+    #[derive(Serialize, Deserialize, PartialEq, Debug, Packed, UnPacked)]
     pub struct Task {
         pub task_id: i32,         // 任务id，随机生成， 如果task_id=0 表示没有任务
         pub product_name: String, // 产品名
@@ -136,7 +118,7 @@ mod tests {
         let packet = Packet::new(PackType::Task, Some(task)).unwrap();
         let data = packet.pack().unwrap();
         // 读取头部
-        let header_size = Header::<PackType>::size();
+        let header_size = Header::<PackType>::size().unwrap();
         let header = Header::<PackType>::unpack(&data[0..header_size]).unwrap();
         assert_eq!(header.pack_type, PackType::Task);
         assert!(header.check_flag());

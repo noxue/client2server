@@ -4,7 +4,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{self, DeriveInput};
 
-#[proc_macro_derive(Pack)]
+#[proc_macro_derive(Packed)]
 pub fn pack_macro_derive(input: TokenStream) -> TokenStream {
     // Construct a representation of Rust code as a syntax tree
     // that we can manipulate
@@ -25,7 +25,10 @@ fn impl_pack_macro(ast: &DeriveInput) -> TokenStream {
         quote! {
             impl Pack for #name {
                 fn pack(&self) -> Result<Vec<u8>, String> {
-                    pack(self)
+                    match bincode::serialize(self) {
+                        Ok(v) => Ok(v),
+                        Err(e) => Err(format!("{:?}", e)),
+                    }
                 }
             }
         }
@@ -35,7 +38,10 @@ fn impl_pack_macro(ast: &DeriveInput) -> TokenStream {
             impl #impl_generics Pack for #name #ty_generics where
             T: Serialize + PartialEq + Debug + Default, {
                 fn pack(&self) -> Result<Vec<u8>, String> {
-                    pack(self)
+                    match bincode::serialize(self) {
+                        Ok(v) => Ok(v),
+                        Err(e) => Err(format!("{:?}", e)),
+                    }
                 }
             }
         }
@@ -44,7 +50,7 @@ fn impl_pack_macro(ast: &DeriveInput) -> TokenStream {
     gen.into()
 }
 
-#[proc_macro_derive(UnPack)]
+#[proc_macro_derive(UnPacked)]
 pub fn unpack_macro_derive(input: TokenStream) -> TokenStream {
     // Construct a representation of Rust code as a syntax tree
     // that we can manipulate
@@ -65,7 +71,10 @@ fn impl_unpack_macro(ast: &syn::DeriveInput) -> TokenStream {
         quote! {
             impl UnPack for #name {
                 fn unpack(encoded: &[u8]) -> Result<Self, String> {
-                    unpack(encoded)
+                    match bincode::deserialize(encoded) {
+                        Ok(v) => Ok(v),
+                        Err(e) => Err(format!("{:?}", e)),
+                    }
                 }
             }
         }
@@ -75,7 +84,10 @@ fn impl_unpack_macro(ast: &syn::DeriveInput) -> TokenStream {
             impl #impl_generics UnPack for #name #ty_generics where
             T: DeserializeOwned + PartialEq + Debug+ Serialize+Default,{
                 fn unpack(encoded: &[u8]) -> Result<Self, String> {
-                    unpack(encoded)
+                    match bincode::deserialize(encoded) {
+                        Ok(v) => Ok(v),
+                        Err(e) => Err(format!("{:?}", e)),
+                    }
                 }
             }
         }
