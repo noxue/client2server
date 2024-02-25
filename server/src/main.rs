@@ -80,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // 打印接收到的数据
             trace!("{}", String::from_utf8_lossy(&buf[..n]));
-            if let Err(e) = stream.write(&buf[..n]).await{
+            if let Err(e) = stream.write(&buf[..n]).await {
                 error!("发送数据给客户端出错：{:?}", e);
             }
 
@@ -129,7 +129,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             loop {
                 // 从steam中读取的返回给用户
                 let mut buf = [0; 1024];
-                let n = match time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await {
+                // 这里应该加入数据包类型来知道接收的数据结束了，在协议中定义即可
+                let n = match time::timeout(Duration::from_secs(1), stream.read(&mut buf)).await {
                     Ok(Ok(0)) => {
                         debug!("Connection closed");
                         break;
@@ -151,7 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             // 马上刷新标准输出
             // std::io::stdout().flush().unwrap();
-            debug!("Finished handling connection from: {}", ip_port);
+            debug!("Finished handling connection from: {}", ip_port); 
         });
     }
 }
