@@ -20,12 +20,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Server running on port 3000");
 
-    let user_conns: Arc<Mutex<HashMap<String, TcpStream, _>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let client_conn = Arc::new(Mutex::new(None));
 
+    let client_conn_clone = client_conn.clone();
     tokio::spawn(async move {
         loop {
             let (mut socket, addr) = client_listener.accept().await.unwrap();
+            {
+                *client_conn_clone.lock().await = Some(socket);
+            }
+            info!("接收到客户端连接: {}", addr);
         }
     });
 
@@ -34,26 +38,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ip_port = addr.to_string();
         debug!("Accepted connection from: {}", ip_port);
 
-        {
-            user_conns
-                .clone()
-                .lock()
-                .await
-                .insert(ip_port.clone(), socket);
-        }
-        let user_conns_clone = user_conns.clone();
+        let client_conn = client_conn.clone();
         // 使用Tokio的任务来异步处理每个连接
         tokio::spawn(async move {
             debug!("Handling connection from: {}", ip_port);
-            let mut binding = user_conns_clone.lock().await;
             // let socket = binding.get_mut(&ip_port).unwrap();
-            let mut socket = binding.remove(&ip_port).unwrap();
             let (mut reader, mut writer) = socket.split();
             let mut buf = [0; 102400];
 
             // 对127.0.0.1:8000 发起连接
-            let mut stream = TcpStream::connect("127.0.0.1:8000").await.unwrap();
+            // let mut stream = TcpStream::connect("127.0.0.1:8000").await.unwrap();
 
+            let binding = client_conn.clone();
+            let mut binding = binding.lock().await;
+            // let stream = binding.as_mut().unwrap();
+            let stream = match binding.as_mut() {
+                Some(stream) => stream,
+                None => {
+                    error!("未获取到客户端连接");
+                    return;
+                }
+            };
             debug!("Reading from socket:{}", ip_port);
             // 在一个循环中读取数据，直到连接被关闭
             let n = match time::timeout(Duration::from_secs(3), reader.read(&mut buf)).await {
@@ -75,7 +80,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // 打印接收到的数据
             trace!("{}", String::from_utf8_lossy(&buf[..n]));
-            stream.write(&buf[..n]).await.unwrap();
+            if let Err(e) = stream.write(&buf[..n]).await{
+                error!("发送数据给客户端出错：{:?}", e);
+            }
 
             // 马上刷新标准输出
             // std::io::stdout().flush().unwrap();
