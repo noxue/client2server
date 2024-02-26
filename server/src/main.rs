@@ -50,7 +50,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 对127.0.0.1:8000 发起连接
             // let mut stream = TcpStream::connect("127.0.0.1:8000").await.unwrap();
 
-           
             debug!("Reading from socket:{}", ip_port);
             // 在一个循环中读取数据，直到连接被关闭
             let n = match time::timeout(Duration::from_secs(3), reader.read(&mut buf)).await {
@@ -81,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let encoded = packet.pack().unwrap();
 
+            debug!("打包的数据:{:x?}", encoded);
 
             let binding = client_conn.clone();
             let mut binding = binding.lock().await;
@@ -149,6 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let encoded = packet.pack().unwrap();
 
+                debug!("打包的数据:{:x?}", encoded);
                 stream.write(&encoded).await.unwrap();
             }
 
@@ -161,45 +162,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .unwrap();
             let encoded = packet.pack().unwrap();
+            debug!("打包的数据:{:x?}", encoded);
             stream.write(&encoded).await.unwrap();
 
             let header_size = proto::Header::size().unwrap();
             loop {
+                let mut readed_len = 0;
                 let mut buf = vec![0; header_size];
-                let n = match stream.read(&mut buf).await {
-                    Ok(n) if n == 0 => {
-                        debug!("连接断开");
-                        return;
-                    }
-                    Ok(n) => n,
-                    Err(e) => {
-                        error!("failed to read from socket; err = {:?}", e);
-                        break;
-                    }
-                };
-                let header = match proto::Header::unpack(&buf) {
+                while readed_len < header_size {
+                    let mut tmp_buf = vec![0; header_size-readed_len];
+                    let n = match stream.read(&mut tmp_buf).await {
+                        Ok(n) if n == 0 => {
+                            debug!("连接断开");
+                            return;
+                        }
+                        Ok(n) => n,
+                        Err(e) => {
+                            error!("从客户端读取头数据出错; err = {:?}\nbuf:{:?}", e, &buf);
+                            break;
+                        }
+                    };
+                    buf = [&buf[..readed_len as usize], &tmp_buf[..n]].concat();
+                    readed_len += n;
+                }
+                debug!("收到的打包数据:{:x?}", &buf[..header_size]);
+                let header = match proto::Header::unpack(&buf[..header_size]) {
                     Ok(header) => header,
                     Err(e) => {
-                        error!("failed to unpack header; err = {:?}", e);
+                        error!("failed to unpack header; err = {:?}\nbuf:{:?}", e, &buf);
                         break;
                     }
                 };
 
+                if !header.check_flag() {
+                    error!("数据头校验失败");
+                    break;
+                }
+
                 match header.pack_type {
                     PackType::Data => {
+                        let mut readed_len = 0;
                         let mut buf = vec![0; header.body_size as usize];
-                        let n = match stream.read(&mut buf).await {
-                            Ok(n) if n == 0 => {
-                                debug!("连接断开");
-                                return;
-                            }
-                            Ok(n) => n,
-                            Err(e) => {
-                                error!("failed to read from socket; err = {:?}", e);
-                                continue;
-                            }
-                        };
-                        let decoded = match proto::Data::unpack(&buf) {
+                        while readed_len < header.body_size {
+                            let mut tmp_buf = vec![0; header.body_size as usize - readed_len as usize];
+                            let n = match stream.read(&mut tmp_buf).await {
+                                Ok(n) if n == 0 => {
+                                    debug!("连接断开");
+                                    return;
+                                }
+                                Ok(n) => n,
+                                Err(e) => {
+                                    error!("failed to read from socket; err = {:?}", e);
+                                    continue;
+                                }
+                            };
+                            buf = [&buf[..readed_len as usize], &tmp_buf[..n]].concat();
+                            readed_len += n as u64;
+                        }
+
+                        let decoded = match proto::Data::unpack(&buf[..header.body_size as usize]) {
                             Ok(decoded) => decoded,
                             Err(e) => {
                                 error!("failed to unpack data; err = {:?}", e);
@@ -211,7 +232,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             String::from_utf8_lossy(&decoded.data)
                         );
 
-                        if let Err(e) = writer.write_all(&decoded.data).await {
+                        if let Err(e) = writer.write(&decoded.data).await {
                             error!("转发数据给客户端出错，err = {:?}", e);
                             continue;
                         }
@@ -229,7 +250,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 continue;
                             }
                         };
-                        let decoded = match proto::Data::unpack(&buf) {
+                        let decoded = match proto::Data::unpack(&buf[..n]) {
                             Ok(decoded) => decoded,
                             Err(e) => {
                                 error!("failed to unpack data; err = {:?}", e);

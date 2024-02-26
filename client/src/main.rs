@@ -13,8 +13,8 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     // 对 4000 发起连接
-
-    let mut stream = TcpStream::connect("127.0.0.1:4000").await.unwrap();
+    // let mut stream = TcpStream::connect("127.0.0.1:4000").await.unwrap();
+    let mut stream = TcpStream::connect("121.40.67.145:4000").await.unwrap();
     debug!("服务端连接成功");
     //  stream <-> stream2
     loop {
@@ -36,7 +36,7 @@ async fn main() {
             let n = match stream.read(&mut buf).await {
                 Ok(n) if n == 0 => {
                     debug!("连接断开");
-                    return;
+                    break;
                 }
                 Ok(n) => n,
                 Err(e) => {
@@ -45,13 +45,20 @@ async fn main() {
                 }
             };
 
-            let header = match proto::Header::unpack(&buf) {
+            debug!("收到的打包后的数据:{:x?}", &buf[..n]);
+
+            let header = match proto::Header::unpack(&buf[..n]) {
                 Ok(header) => header,
                 Err(e) => {
-                    error!("failed to unpack header; err = {:?}", e);
+                    error!("failed to unpack header; err = {:?}\nbuf:{:?}", e, &buf);
                     break;
                 }
             };
+
+            if !header.check_flag() {
+                error!("数据头校验失败");
+                break;
+            }
 
             match header.pack_type {
                 proto::PackType::Data => {
@@ -59,7 +66,7 @@ async fn main() {
                     let n = match stream.read(&mut buf).await {
                         Ok(n) if n == 0 => {
                             debug!("连接断开");
-                            return;
+                            break;
                         }
                         Ok(n) => n,
                         Err(e) => {
@@ -67,7 +74,7 @@ async fn main() {
                             return;
                         }
                     };
-                    let data = match proto::Data::unpack(&buf) {
+                    let data = match proto::Data::unpack(&buf[..n]) {
                         Ok(decoded) => decoded,
                         Err(e) => {
                             error!("failed to unpack data; err = {:?}", e);
@@ -98,7 +105,7 @@ async fn main() {
                             continue;
                         }
                     };
-                    let decoded = match proto::Data::unpack(&buf) {
+                    let decoded = match proto::Data::unpack(&buf[..n]) {
                         Ok(decoded) => decoded,
                         Err(e) => {
                             error!("failed to unpack data; err = {:?}", e);
@@ -132,10 +139,14 @@ async fn main() {
                     .unwrap();
                     let encoded = packet.pack().unwrap();
 
+                    debug!("打包后的数据：{:x?}", encoded);
                     if let Err(e) = stream.write(&encoded).await {
                         error!("把客户端数据转发给用户出错; err = {:?}", e);
-                        return;
+                        break;
                     }
+
+                    // fflush
+                    stream.flush().await.unwrap();
 
                     break;
                 }
@@ -152,6 +163,7 @@ async fn main() {
                     .unwrap();
                     let encoded = packet.pack().unwrap();
 
+                    debug!("打包后的数据：{:x?}", encoded);
                     if let Err(e) = stream.write(&encoded).await {
                         error!("把客户端数据转发给用户出错; err = {:?}", e);
                         return;
@@ -175,6 +187,7 @@ async fn main() {
 
             let encoded = packet.pack().unwrap();
 
+            debug!("打包后的数据：{:x?}", encoded);
             if let Err(e) = stream.write(&encoded).await {
                 error!("把客户端数据转发给用户出错; err = {:?}", e);
                 return;

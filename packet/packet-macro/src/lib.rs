@@ -25,7 +25,7 @@ fn impl_pack_macro(ast: &DeriveInput) -> TokenStream {
         quote! {
             impl Pack for #name {
                 fn pack(&self) -> Result<Vec<u8>, String> {
-                    match bincode::serialize(self) {
+                    match bincode::DefaultOptions::new().with_fixint_encoding().with_little_endian().serialize(self){
                         Ok(v) => Ok(v),
                         Err(e) => Err(format!("{:?}", e)),
                     }
@@ -38,7 +38,7 @@ fn impl_pack_macro(ast: &DeriveInput) -> TokenStream {
             impl #impl_generics Pack for #name #ty_generics where
             T: Serialize + PartialEq + Debug + Default, {
                 fn pack(&self) -> Result<Vec<u8>, String> {
-                    match bincode::serialize(self) {
+                    match bincode::DefaultOptions::new().with_fixint_encoding().with_little_endian().serialize(self) {
                         Ok(v) => Ok(v),
                         Err(e) => Err(format!("{:?}", e)),
                     }
@@ -71,7 +71,7 @@ fn impl_unpack_macro(ast: &syn::DeriveInput) -> TokenStream {
         quote! {
             impl UnPack for #name {
                 fn unpack(encoded: &[u8]) -> Result<Self, String> {
-                    match bincode::deserialize(encoded) {
+                    match bincode::DefaultOptions::new().with_fixint_encoding().with_little_endian().deserialize(encoded) {
                         Ok(v) => Ok(v),
                         Err(e) => Err(format!("{:?}", e)),
                     }
@@ -84,7 +84,7 @@ fn impl_unpack_macro(ast: &syn::DeriveInput) -> TokenStream {
             impl #impl_generics UnPack for #name #ty_generics where
             T: DeserializeOwned + PartialEq + Debug+ Serialize+Default,{
                 fn unpack(encoded: &[u8]) -> Result<Self, String> {
-                    match bincode::deserialize(encoded) {
+                    match bincode::DefaultOptions::new().with_fixint_encoding().with_little_endian().deserialize(encoded) {
                         Ok(v) => Ok(v),
                         Err(e) => Err(format!("{:?}", e)),
                     }

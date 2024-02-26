@@ -1,8 +1,7 @@
 pub use packet_macro::{Packed, UnPacked};
-
-// use packet_macro::{Pack, UnPack};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fmt::Debug;
+use bincode::Options;
 
 pub trait Pack {
     fn pack(&self) -> Result<Vec<u8>, String>;
@@ -117,6 +116,7 @@ mod tests {
         };
         let packet = Packet::new(PackType::Task, Some(task)).unwrap();
         let data = packet.pack().unwrap();
+        println!("packed:{:x?}", data);
         // 读取头部
         let header_size = Header::<PackType>::size().unwrap();
         let header = Header::<PackType>::unpack(&data[0..header_size]).unwrap();
