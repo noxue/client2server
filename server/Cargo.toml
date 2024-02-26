@@ -13,3 +13,4 @@ hyper-util = { version = "0.1", features = ["full"] }
 futures = "0.3"
 tracing="*"
 tracing-subscriber="*"
+proto={path="../proto"}

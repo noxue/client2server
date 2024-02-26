@@ -3,6 +3,7 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
+use proto::{Pack, PackType, UnPack};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
@@ -78,9 +79,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
+            let packet = proto::Packet::new(
+                PackType::Data,
+                Some(proto::Data {
+                    user_id: ip_port.clone(),
+                    data: buf[..n].to_vec(),
+                }),
+            )
+            .unwrap();
+
+            let encoded = packet.pack().unwrap();
+
             // 打印接收到的数据
             trace!("{}", String::from_utf8_lossy(&buf[..n]));
-            if let Err(e) = stream.write(&buf[..n]).await {
+            if let Err(e) = stream.write(&encoded).await {
                 error!("发送数据给客户端出错：{:?}", e);
             }
 
@@ -121,38 +133,121 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return;
                 }
                 trace!("{}", String::from_utf8_lossy(&body));
-                stream.write(&body).await.unwrap();
+
+                let packet = proto::Packet::new(
+                    PackType::Data,
+                    Some(proto::Data {
+                        user_id: ip_port.clone(),
+                        data: body,
+                    }),
+                )
+                .unwrap();
+
+                let encoded = packet.pack().unwrap();
+
+                stream.write(&encoded).await.unwrap();
             }
 
-            stream.flush().await.unwrap();
+            let packet = proto::Packet::new(
+                PackType::DataEnd,
+                Some(proto::Data {
+                    user_id: ip_port.clone(),
+                    data: vec![],
+                }),
+            )
+            .unwrap();
+            let encoded = packet.pack().unwrap();
+            stream.write(&encoded).await.unwrap();
 
+            let header_size = proto::Header::size().unwrap();
             loop {
-                // 从steam中读取的返回给用户
-                let mut buf = [0; 1024];
-                // 这里应该加入数据包类型来知道接收的数据结束了，在协议中定义即可
-                let n = match time::timeout(Duration::from_secs(1), stream.read(&mut buf)).await {
-                    Ok(Ok(0)) => {
-                        debug!("Connection closed");
-                        break;
-                    }
-                    Ok(Ok(n)) => n,
-                    Ok(Err(e)) => {
-                        error!("Failed to read from socket: {:?}", e);
+                let mut buf = vec![0; header_size];
+                let n = match stream.read(&mut buf).await {
+                    Ok(n) if n == 0 => {
+                        debug!("连接断开");
                         return;
                     }
-                    Err(_) => {
-                        // 超时处理逻辑
-                        error!("获取客户端数据超时");
-                        return;
+                    Ok(n) => n,
+                    Err(e) => {
+                        error!("failed to read from socket; err = {:?}", e);
+                        continue;
                     }
                 };
-                // debug!("收到数据:{}", String::from_utf8_lossy(&buf[..n]));
-                writer.write(&buf[..n]).await.unwrap();
-                writer.flush().await.unwrap();
+                let header = match proto::Header::unpack(&buf) {
+                    Ok(header) => header,
+                    Err(e) => {
+                        error!("failed to unpack header; err = {:?}", e);
+                        continue;
+                    }
+                };
+
+                match header.pack_type {
+                    PackType::Data => {
+                        let mut buf = vec![0; header.body_size as usize];
+                        let n = match stream.read(&mut buf).await {
+                            Ok(n) if n == 0 => {
+                                debug!("连接断开");
+                                return;
+                            }
+                            Ok(n) => n,
+                            Err(e) => {
+                                error!("failed to read from socket; err = {:?}", e);
+                                continue;
+                            }
+                        };
+                        let decoded = match proto::Data::unpack(&buf) {
+                            Ok(decoded) => decoded,
+                            Err(e) => {
+                                error!("failed to unpack data; err = {:?}", e);
+                                continue;
+                            }
+                        };
+                        trace!(
+                            "读取到用户数据：{:?}",
+                            String::from_utf8_lossy(&decoded.data)
+                        );
+
+                        if let Err(e) = writer.write_all(&decoded.data).await {
+                            error!("转发数据给客户端出错，err = {:?}", e);
+                            continue;
+                        }
+                    }
+                    PackType::DataEnd => {
+                        let mut buf = vec![0; header.body_size as usize];
+                        let n = match stream.read(&mut buf).await {
+                            Ok(n) if n == 0 => {
+                                debug!("连接断开");
+                                return;
+                            }
+                            Ok(n) => n,
+                            Err(e) => {
+                                error!("failed to read from socket; err = {:?}", e);
+                                continue;
+                            }
+                        };
+                        let decoded = match proto::Data::unpack(&buf) {
+                            Ok(decoded) => decoded,
+                            Err(e) => {
+                                error!("failed to unpack data; err = {:?}", e);
+                                continue;
+                            }
+                        };
+                        debug!("数据读取完毕");
+                        break;
+                    }
+                    _ => {
+                        error!("未知的数据包类型");
+                        break;
+                    }
+                }
+
+                // // debug!("收到数据:{}", String::from_utf8_lossy(&buf[..n]));
+                // writer.write(&buf[..n]).await.unwrap();
+                // writer.flush().await.unwrap();
             }
             // 马上刷新标准输出
             // std::io::stdout().flush().unwrap();
-            debug!("Finished handling connection from: {}", ip_port); 
+            debug!("Finished handling connection from: {}", ip_port);
         });
     }
 }

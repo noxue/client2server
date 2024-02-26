@@ -1,12 +1,14 @@
-use packet::{Pack, Packed, UnPack, UnPacked};
+pub use packet::{Pack, Packed, UnPack, UnPacked};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+
+#[derive(Debug,  PartialEq, Serialize, Deserialize)]
 pub enum PackType {
     Heartbeat,
     Login,
     Logout,
     Data,
+    DataEnd,
 }
 
 impl Default for PackType {
@@ -36,4 +38,3 @@ pub struct Data {
 
 pub type Packet = packet::Packet<PackType>;
 pub type Header = packet::Header<PackType>;
-
