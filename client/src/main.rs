@@ -13,12 +13,9 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     // 对 4000 发起连接
+
     let mut stream = TcpStream::connect("127.0.0.1:4000").await.unwrap();
     debug!("服务端连接成功");
-
-    // let (mut reader, mut writer) = stream.split();
-    // let (mut reader2, mut writer2) = stream2.lock().await.as_mut().unwrap().split();
-
     //  stream <-> stream2
     loop {
         debug!("正在等待读取用户数据");
@@ -44,7 +41,7 @@ async fn main() {
                 Ok(n) => n,
                 Err(e) => {
                     error!("failed to read from socket; err = {:?}", e);
-                    continue;
+                    break;
                 }
             };
 
@@ -52,7 +49,7 @@ async fn main() {
                 Ok(header) => header,
                 Err(e) => {
                     error!("failed to unpack header; err = {:?}", e);
-                    continue;
+                    break;
                 }
             };
 
@@ -67,7 +64,7 @@ async fn main() {
                         Ok(n) => n,
                         Err(e) => {
                             error!("failed to read from socket; err = {:?}", e);
-                            continue;
+                            return;
                         }
                     };
                     let data = match proto::Data::unpack(&buf) {
@@ -145,6 +142,20 @@ async fn main() {
                 Ok(n) => n,
                 Err(e) => {
                     error!("从客户端读取数据出错; err = {:?}", e);
+                    let packet = proto::Packet::new(
+                        proto::PackType::DataEnd,
+                        Some(proto::Data {
+                            user_id: user_id.clone(),
+                            data: vec![],
+                        }),
+                    )
+                    .unwrap();
+                    let encoded = packet.pack().unwrap();
+
+                    if let Err(e) = stream.write(&encoded).await {
+                        error!("把客户端数据转发给用户出错; err = {:?}", e);
+                        return;
+                    }
                     break;
                 }
             };

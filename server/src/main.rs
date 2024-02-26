@@ -45,21 +45,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             debug!("Handling connection from: {}", ip_port);
             // let socket = binding.get_mut(&ip_port).unwrap();
             let (mut reader, mut writer) = socket.split();
-            let mut buf = [0; 102400];
+            let mut buf = [0; 10240];
 
             // 对127.0.0.1:8000 发起连接
             // let mut stream = TcpStream::connect("127.0.0.1:8000").await.unwrap();
 
-            let binding = client_conn.clone();
-            let mut binding = binding.lock().await;
-            // let stream = binding.as_mut().unwrap();
-            let stream = match binding.as_mut() {
-                Some(stream) => stream,
-                None => {
-                    error!("未获取到客户端连接");
-                    return;
-                }
-            };
+           
             debug!("Reading from socket:{}", ip_port);
             // 在一个循环中读取数据，直到连接被关闭
             let n = match time::timeout(Duration::from_secs(3), reader.read(&mut buf)).await {
@@ -90,10 +81,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let encoded = packet.pack().unwrap();
 
+
+            let binding = client_conn.clone();
+            let mut binding = binding.lock().await;
+            // let stream = binding.as_mut().unwrap();
+            let stream = match binding.as_mut() {
+                Some(stream) => stream,
+                None => {
+                    error!("未获取到客户端连接");
+                    return;
+                }
+            };
+
             // 打印接收到的数据
             trace!("{}", String::from_utf8_lossy(&buf[..n]));
             if let Err(e) = stream.write(&encoded).await {
                 error!("发送数据给客户端出错：{:?}", e);
+                return;
             }
 
             // 马上刷新标准输出
@@ -170,14 +174,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(n) => n,
                     Err(e) => {
                         error!("failed to read from socket; err = {:?}", e);
-                        continue;
+                        break;
                     }
                 };
                 let header = match proto::Header::unpack(&buf) {
                     Ok(header) => header,
                     Err(e) => {
                         error!("failed to unpack header; err = {:?}", e);
-                        continue;
+                        break;
                     }
                 };
 
