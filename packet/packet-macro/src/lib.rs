@@ -19,7 +19,7 @@ fn impl_pack_macro(ast: &DeriveInput) -> TokenStream {
     let generics = &ast.generics;
 
     // 检查是否有泛型参数
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    let (impl_generics, ty_generics, _where_clause) = generics.split_for_impl();
     let gen = if generics.params.is_empty() {
         // 没有泛型参数的情况
         quote! {
@@ -65,7 +65,7 @@ fn impl_unpack_macro(ast: &syn::DeriveInput) -> TokenStream {
     let generics = &ast.generics;
 
     // 检查是否有泛型参数
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    let (impl_generics, ty_generics, _where_clause) = generics.split_for_impl();
     let gen = if generics.params.is_empty() {
         // 没有泛型参数的情况
         quote! {

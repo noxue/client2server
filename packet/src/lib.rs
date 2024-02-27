@@ -81,7 +81,7 @@ where
     // 先打包头部，然后再打包数据，再合并，头部固定大小的
     fn pack(&self) -> Result<Vec<u8>, String> {
         let mut data = self.header.pack()?;
-        data.extend_from_slice(&self.data);
+        data.extend_from_slice(&self.data[..self.header.body_size as usize]);
         Ok(data)
     }
 }

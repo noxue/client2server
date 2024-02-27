@@ -40,10 +40,3 @@ pub struct Data {
 pub type Packet = packet::Packet<PackType>;
 pub type Header = packet::Header<PackType>;
 
-
-fn test(){
-    let options = bincode::options().with_big_endian();
-    bincode::DefaultOptions::new().with_big_endian();
-    bincode::DefaultOptions::new().with_little_endian();
-    bincode::DefaultOptions::new().with_fixint_encoding();
-}

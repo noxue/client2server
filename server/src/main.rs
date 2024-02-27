@@ -1,32 +1,75 @@
-use std::collections::HashMap;
-use std::io::Write;
+use clap::Parser;
+use proto::{Pack, PackType, UnPack};
 use std::sync::Arc;
 use std::time::Duration;
-
-use proto::{Pack, PackType, UnPack};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::time;
 use tracing::{debug, error, info, trace};
-use tracing_subscriber::field::debug;
+
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
+struct Args {
+    #[clap(
+        short,
+        long,
+        value_parser,
+        default_value = "0.0.0.0",
+        help = "指定要监听的主机ip"
+    )]
+    server_ip: String,
+    #[clap(
+        short,
+        long,
+        value_parser,
+        default_value_t = 80,
+        help = "提供给外网用户访问的端口"
+    )]
+    user_port: u16,
+    #[clap(
+        short,
+        long,
+        value_parser,
+        default_value_t = 9527,
+        help = "提供给客户端访问的端口"
+    )]
+    client_port: u16,
+
+    #[clap(
+        short,
+        long,
+        value_parser,
+        default_value = "info",
+        help = "指定日志级别"
+    )]
+    log_level: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    std::env::set_var("RUST_LOG", "debug");
+    let args = Args::parse();
+
+    println!("args:{:?}", args);
+
+    std::env::set_var("RUST_LOG", args.log_level);
     tracing_subscriber::fmt::init();
 
-    let user_listener = TcpListener::bind("0.0.0.0:3000").await?;
-    let client_listener = TcpListener::bind("0.0.0.0:4000").await?;
+    let user_listener = TcpListener::bind(format!("{}:{}", args.server_ip, args.user_port)).await?;
+    let client_listener =
+        TcpListener::bind(format!("{}:{}", args.server_ip, args.client_port)).await?;
 
-    info!("Server running on port 3000");
+    info!(
+        "服务端启动成功，监听地址: {}，用户端口：{},  客户端端口：{}",
+        args.server_ip, args.user_port, args.client_port
+    );
 
     let client_conn = Arc::new(Mutex::new(None));
 
     let client_conn_clone = client_conn.clone();
     tokio::spawn(async move {
         loop {
-            let (mut socket, addr) = client_listener.accept().await.unwrap();
+            let (socket, addr) = client_listener.accept().await.unwrap();
             {
                 *client_conn_clone.lock().await = Some(socket);
             }
@@ -44,15 +87,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             debug!("Handling connection from: {}", ip_port);
             // let socket = binding.get_mut(&ip_port).unwrap();
-            let (mut reader, mut writer) = socket.split();
-            let mut buf = [0; 10240];
+            // let (mut socket, mut socket) = socket.split();
+            let mut buf = vec![0; 1024*1024];
 
             // 对127.0.0.1:8000 发起连接
             // let mut stream = TcpStream::connect("127.0.0.1:8000").await.unwrap();
 
             debug!("Reading from socket:{}", ip_port);
             // 在一个循环中读取数据，直到连接被关闭
-            let n = match time::timeout(Duration::from_secs(3), reader.read(&mut buf)).await {
+            let n = match time::timeout(Duration::from_secs(3), socket.read(&mut buf)).await {
                 Ok(Ok(0)) => {
                     debug!("Connection closed");
                     return;
@@ -132,7 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // 第一个数据包可能已经包含了部分body内容，所以需要减去已经读取的部分
                 let content_length = content_length - (n - (header_end_pos + 4));
                 let mut body = vec![0; content_length];
-                if let Err(e) = reader.read_exact(&mut body).await {
+                if let Err(e) = socket.read_exact(&mut body).await {
                     error!("Failed to read body: {:?}", e);
                     return;
                 }
@@ -170,7 +213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut readed_len = 0;
                 let mut buf = vec![0; header_size];
                 while readed_len < header_size {
-                    let mut tmp_buf = vec![0; header_size-readed_len];
+                    let mut tmp_buf = vec![0; header_size - readed_len];
                     let n = match stream.read(&mut tmp_buf).await {
                         Ok(n) if n == 0 => {
                             debug!("连接断开");
@@ -204,7 +247,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut readed_len = 0;
                         let mut buf = vec![0; header.body_size as usize];
                         while readed_len < header.body_size {
-                            let mut tmp_buf = vec![0; header.body_size as usize - readed_len as usize];
+                            let mut tmp_buf =
+                                vec![0; header.body_size as usize - readed_len as usize];
                             let n = match stream.read(&mut tmp_buf).await {
                                 Ok(n) if n == 0 => {
                                     debug!("连接断开");
@@ -232,31 +276,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             String::from_utf8_lossy(&decoded.data)
                         );
 
-                        if let Err(e) = writer.write(&decoded.data).await {
-                            error!("转发数据给客户端出错，err = {:?}", e);
-                            continue;
+                        info!("发送给客户:{},的数据长度:{}", ip_port, decoded.data.len());
+                        if let Err(e) = socket.write(&decoded.data).await {
+                            error!("转发数据给客户端出错，user={}, err = {:?}", ip_port, e);
+                            return;
                         }
+
                     }
                     PackType::DataEnd => {
+                        let mut readed_len = 0;
                         let mut buf = vec![0; header.body_size as usize];
-                        let n = match stream.read(&mut buf).await {
-                            Ok(n) if n == 0 => {
-                                debug!("连接断开");
-                                return;
-                            }
-                            Ok(n) => n,
-                            Err(e) => {
-                                error!("failed to read from socket; err = {:?}", e);
-                                continue;
-                            }
-                        };
-                        let decoded = match proto::Data::unpack(&buf[..n]) {
-                            Ok(decoded) => decoded,
-                            Err(e) => {
-                                error!("failed to unpack data; err = {:?}", e);
-                                continue;
-                            }
-                        };
+                        while readed_len < header.body_size {
+                            let mut tmp_buf =
+                                vec![0; header.body_size as usize - readed_len as usize];
+                            let n = match stream.read(&mut tmp_buf).await {
+                                Ok(n) if n == 0 => {
+                                    debug!("连接断开");
+                                    return;
+                                }
+                                Ok(n) => n,
+                                Err(e) => {
+                                    error!("failed to read from socket; err = {:?}", e);
+                                    continue;
+                                }
+                            };
+                            buf = [&buf[..readed_len as usize], &tmp_buf[..n]].concat();
+                            readed_len += n as u64;
+                        }
+                        socket.flush().await.unwrap();
                         debug!("数据读取完毕");
                         break;
                     }
@@ -265,13 +312,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         break;
                     }
                 }
-
-                // // debug!("收到数据:{}", String::from_utf8_lossy(&buf[..n]));
-                // writer.write(&buf[..n]).await.unwrap();
-                // writer.flush().await.unwrap();
             }
-            // 马上刷新标准输出
-            // std::io::stdout().flush().unwrap();
+        
             debug!("Finished handling connection from: {}", ip_port);
         });
     }
