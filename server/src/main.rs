@@ -77,6 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+
     loop {
         let (mut socket, addr) = user_listener.accept().await?;
         let ip_port = addr.to_string();
@@ -112,6 +113,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
+            // 打印接收到的数据
+            trace!("{}", String::from_utf8_lossy(&buf[..n]));
+
             let packet = proto::Packet::new(
                 PackType::Data,
                 Some(proto::Data {
@@ -123,7 +127,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let encoded = packet.pack().unwrap();
 
-            debug!("打包的数据:{:x?}", encoded);
+            trace!("打包的数据:{:x?}", encoded);
+            
+
 
             let binding = client_conn.clone();
             let mut binding = binding.lock().await;
@@ -136,8 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            // 打印接收到的数据
-            trace!("{}", String::from_utf8_lossy(&buf[..n]));
+            debug!("打包发送到客户端的数据长度:{}", encoded.len());
             if let Err(e) = stream.write(&encoded).await {
                 error!("发送数据给客户端出错：{:?}", e);
                 return;

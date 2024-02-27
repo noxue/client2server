@@ -50,8 +50,8 @@ where
 /// 数据头
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct Packet<T> {
-    header: Header<T>,
-    data: Vec<u8>,
+    pub header: Header<T>,
+    pub data: Vec<u8>,
 }
 
 /// T 一个enum类型，表示数据包类型
