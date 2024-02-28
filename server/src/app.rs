@@ -9,7 +9,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::time;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::agent::Agent;
 use crate::client::Client;
@@ -157,9 +157,11 @@ impl App {
                                         </body>
                                         </html>"#;
                                         let http_html = format!(
-                                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", html.len(), html
+                                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                                            html.len(),
+                                            html
                                         );
-                                        
+
                                         let packet = proto::Packet::new(
                                             PackType::Data,
                                             Some(proto::Data {
@@ -251,15 +253,15 @@ impl App {
                     PackType::Data => {
                         let data = proto::Data::unpack(&packet.data).unwrap();
                         debug!("接收到客户端数据: {:?}", data);
-                        if let Err(e) = agents
-                            .lock()
-                            .await
-                            .get(&data.agent_ip_port)
-                            .unwrap()
-                            .sender()
-                            .send(packet)
-                            .await
-                        {
+                        let agents = agents.lock().await;
+                        let agent = match agents.get(&data.agent_ip_port) {
+                            Some(agent) => agent,
+                            None => {
+                                warn!("未找到agent: {:?}", data.agent_ip_port);
+                                continue;
+                            }
+                        };
+                        if let Err(e) = agent.sender().send(packet).await {
                             error!("发送数据给用户端失败: {:?}", e);
                         }
                     }
