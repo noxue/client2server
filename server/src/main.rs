@@ -66,11 +66,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = app::App::new().await?;
 
-    info!(
-        "服务端启动成功，监听地址: {}，用户端口：{},  客户端端口：{}",
-        args.server_ip, args.user_port, args.client_port
-    );
-
     app.run(&args.server_ip, args.user_port, args.client_port).await?;
 
     Ok(())

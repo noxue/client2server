@@ -368,7 +368,7 @@ async fn main() {
 
                 trace!("读取到用户数据：{:?}", String::from_utf8_lossy(&data.data));
                 debug!("共从服务端读取到 {} 字节数据", header_size + readed_len as usize);
-                let user_id = data.user_id.clone();
+                let user_id = data.agent_ip_port.clone();
                 let is_contain_user_id = { users_map.clone().lock().await.contains_key(&user_id) };
                 debug!("用户：{}, 是否存在：{}", user_id, is_contain_user_id);
                 // 如果是新的连接，就建立一个线程把数据转发给本地服务，并读取本地数据返回给中转服务器
@@ -442,7 +442,8 @@ async fn main() {
                             let packet = proto::Packet::new(
                                 proto::PackType::Data,
                                 Some(proto::Data {
-                                    user_id: user_id.to_string(),
+                                    agent_ip_port: user_id.to_string(),
+                                    host: None,
                                     data: buf[..n].to_vec(),
                                 }),
                             )
@@ -461,7 +462,7 @@ async fn main() {
                         users_map_clone2
                             .lock()
                             .await
-                            .insert(data.user_id.clone(), (client_tx, handle));
+                            .insert(data.agent_ip_port.clone(), (client_tx, handle));
                     }
                 }
 
@@ -470,7 +471,7 @@ async fn main() {
                         .clone()
                         .lock()
                         .await
-                        .get(&data.user_id)
+                        .get(&data.agent_ip_port)
                         .unwrap()
                         .0
                         .clone()

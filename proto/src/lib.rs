@@ -34,13 +34,14 @@ impl Default for PackType {
 **************************************************/
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Packed, UnPacked)]
 pub struct Data {
-    pub user_id: String, // 外网客户端id，用ip和端口号组成
+    pub agent_ip_port: String, // 外网客户端id，用ip和端口号组成
+    pub host:Option<String>, // 用户发给服务端的http头信息中的host字段，用来决定数据包发给哪个客户端
     pub data: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Packed, UnPacked)]
 pub struct Bind {
-    host: String,
+    pub host: String,
 }
 
 pub type Packet = packet::Packet<PackType>;
