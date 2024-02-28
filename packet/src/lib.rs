@@ -72,6 +72,13 @@ where
             data,
         })
     }
+
+    pub fn new_without_data(data_type: T) -> Packet<T> {
+        Packet {
+            header: Header::new(0, data_type),
+            data: vec![],
+        }
+    }
 }
 
 impl<T> Pack for Packet<T>

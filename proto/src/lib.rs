@@ -2,14 +2,15 @@ use bincode::Options;
 pub use packet::{Pack, Packed, UnPack, UnPacked};
 use serde::{Deserialize, Serialize};
 
-
-#[derive(Debug,  PartialEq, Serialize, Deserialize, Packed, UnPacked)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Packed, UnPacked)]
 pub enum PackType {
     Heartbeat,
     Login,
     Logout,
     Data,
     DataEnd,
+    Bind, // 表示绑定处理哪个域名下的数据
+    DisConnect,
 }
 
 impl Default for PackType {
@@ -37,6 +38,10 @@ pub struct Data {
     pub data: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Packed, UnPacked)]
+pub struct Bind {
+    host: String,
+}
+
 pub type Packet = packet::Packet<PackType>;
 pub type Header = packet::Header<PackType>;
-
