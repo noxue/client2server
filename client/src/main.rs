@@ -1,17 +1,17 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
-
+use anyhow::bail;
 use clap::Parser;
-use proto::{Pack, Packet, UnPack};
+use proto::{Pack, PackType, Packet, UnPack};
+use std::{collections::HashMap, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::{mpsc::Sender, Mutex},
+    sync::{
+        mpsc::{Receiver, Sender},
+        Mutex,
+    },
     task::JoinHandle,
 };
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, trace};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -56,6 +56,381 @@ struct Args {
     log_level: String,
 }
 
+pub struct App {
+    services: Arc<Mutex<HashMap<String, Service>>>,
+    client: Option<Arc<Mutex<Client>>>,
+}
+
+impl App {
+    pub async fn new() -> anyhow::Result<Self> {
+        let services = Arc::new(Mutex::new(HashMap::new()));
+
+        Ok(App {
+            services,
+            client: None,
+        })
+    }
+
+    pub async fn run(
+        &mut self,
+        server_ip: String,
+        server_port: u16,
+        ip: String,
+        port: u16,
+        host: String,
+    ) -> anyhow::Result<()> {
+        let server_addr = format!("{}:{}", server_ip, server_port);
+        let socket = TcpStream::connect(server_addr).await?;
+        let client = Client::new(host, socket).await?;
+        let client_sender = client.sender().await;
+        let client_receiver = client.receiver().await;
+        self.client = Some(Arc::new(Mutex::new(client)));
+        let services = self.services.clone();
+        // 接受client的数据
+        let h1 = tokio::spawn(async move {
+
+            loop {
+                let packet = client_receiver.lock().await.recv().await;
+                if packet.is_none(){
+                    break;
+                }
+                let packet = packet.unwrap();
+
+                match packet.header.pack_type {
+                    PackType::Data => {
+                        let data = proto::Data::unpack(&packet.data).unwrap();
+                        
+                        // let services = services.clone();
+                        let mut services = services.lock().await;
+                        // 如果是新的客户，创建一个服务
+                        if !services.contains_key(&data.agent_ip_port) {
+                            let service_addr = format!("{}:{}", ip, port);
+                            let service_socket = TcpStream::connect(service_addr).await.unwrap();
+                            let service = Service::new(data.agent_ip_port.clone(), service_socket).await.unwrap();
+                            // let sender = service.sender().await;
+                            let receiver = service.receiver().await;
+                            services.insert(data.agent_ip_port.clone(), service);
+                            
+                            let client_sender = client_sender.clone();
+                            tokio::spawn(async move {
+                                loop {
+                                    let packet = receiver.lock().await.recv().await;
+                                    if packet.is_none(){
+                                        break;
+                                    }
+                                    let packet = packet.unwrap();
+                                    if let Err(e) = client_sender.send(packet).await {
+                                        error!("发送数据失败: {:?}", e);
+                                        break;
+                                    }
+                                }
+                            });
+                        }
+                        if let Some(service) = services.get(&data.agent_ip_port) {
+                            let sender = service.sender().await;
+                            if let Err(e) = sender.send(packet).await {
+                                error!("发送数据失败: {:?}", e);
+                                
+                                continue;
+                            }
+                        } else {
+                            debug!("没有找到服务");
+                        }
+                    }
+                    
+                    _ => {}
+                }
+            }
+        });
+
+        h1.await.unwrap();
+        Ok(())
+    }
+}
+
+pub struct Client {
+    sender: Sender<Packet>,
+    receiver: Arc<Mutex<Receiver<Packet>>>,
+}
+
+impl Client {
+    pub async fn new(host: String, socket: TcpStream) -> anyhow::Result<Self> {
+        let (sender, mut receiver_in) = tokio::sync::mpsc::channel::<Packet>(100);
+        let (sender_out, receiver) = tokio::sync::mpsc::channel::<Packet>(100);
+        let (mut reader, mut writer) = socket.into_split();
+
+        // 发送bind
+        let packet = Packet::new(
+            proto::PackType::Bind,
+            Some(proto::Bind { host: host.clone() }),
+        )
+        .unwrap();
+        let encoded = packet.pack().unwrap();
+        debug!("发送bind数据包:{:x?}", encoded);
+        if let Err(e) = writer.write_all(&encoded).await {
+            error!("发送bind数据包失败; err = {:?}", e);
+            bail!("发送bind数据包失败");
+        }
+
+        tokio::spawn(async move {
+            loop {
+                let packet = read_packet_from_socket(&mut reader).await.unwrap();
+                if let Err(e) = sender_out.send(packet).await {
+                    error!("发送数据失败: {:?}", e);
+                    break;
+                }
+            }
+        });
+        tokio::spawn(async move {
+            loop {
+                match receiver_in.recv().await {
+                    Some(packet) => {
+                        let data = packet.pack().unwrap();
+                        if let Err(e) = writer.write_all(&data).await {
+                            error!("发送数据失败: {:?}", e);
+                            break;
+                        }
+                    }
+                    None => {
+                        break;
+                    }
+                }
+            }
+        });
+        let client = Client {
+            sender,
+            receiver: Arc::new(Mutex::new(receiver)),
+        };
+        Ok(client)
+    }
+
+    pub async fn sender(&self) -> Sender<Packet> {
+        self.sender.clone()
+    }
+
+    pub async fn receiver(&self) -> Arc<Mutex<Receiver<Packet>>> {
+        self.receiver.clone()
+    }
+}
+
+pub struct Service {
+    sender: Sender<Packet>,
+    receiver: Arc<Mutex<Receiver<Packet>>>,
+}
+
+impl Service {
+    pub async fn new(ip_port: String, socket: TcpStream) -> anyhow::Result<Self> {
+        let (sender, mut receiver_in) = tokio::sync::mpsc::channel::<Packet>(100);
+        let (sender_out, receiver) = tokio::sync::mpsc::channel::<Packet>(100);
+        let (mut reader, mut writer) = socket.into_split();
+
+        // reader收到本地服务返回的http数据，就打包发送出去，最终会发到中转服务器上
+        tokio::spawn(async move {
+            loop {
+                let mut buf = vec![0; 1024];
+                let n = match reader.read(&mut buf).await {
+                    Ok(n) if n == 0 => {
+                        debug!("连接断开");
+                        break;
+                    }
+                    Ok(n) => n,
+                    Err(e) => {
+                        error!("从客户端读取数据出错; err = {:?}", e);
+                        break;
+                    }
+                };
+                let packet = Packet::new(
+                    proto::PackType::Data,
+                    Some(proto::Data {
+                        agent_ip_port: ip_port.clone(),
+                        data: buf[..n].to_vec(),
+                        host: None,
+                    }),
+                )
+                .unwrap();
+                debug!("发送数据包:{:x?}", &packet.pack().unwrap());
+                if let Err(e) = sender_out.send(packet).await {
+                    error!("发送数据失败: {:?}", e);
+                    break;
+                }
+            }
+        });
+
+        // 处理收到的数据包，解包发给本地服务
+        tokio::spawn(async move {
+            loop {
+                match receiver_in.recv().await {
+                    Some(packet) => match packet.header.pack_type {
+                        PackType::Data => {
+                            let data = proto::Data::unpack(&packet.data).unwrap();
+                            if let Err(e) = writer.write_all(&data.data).await {
+                                error!("发送数据失败: {:?}", e);
+                                break;
+                            }
+                        }
+                        PackType::DisConnect => {
+                            debug!("连接断开");
+                            break;
+                        }
+                        _ => {}
+                    },
+                    None => {
+                        break;
+                    }
+                }
+            }
+        });
+        let service = Service {
+            sender,
+            receiver: Arc::new(Mutex::new(receiver)),
+        };
+        Ok(service)
+    }
+
+    pub async fn sender(&self) -> Sender<Packet> {
+        self.sender.clone()
+    }
+
+    pub async fn receiver(&self) -> Arc<Mutex<Receiver<Packet>>> {
+        self.receiver.clone()
+    }
+}
+
+
+async fn read_packet_from_socket(
+    reader: &mut tokio::net::tcp::OwnedReadHalf,
+) -> anyhow::Result<proto::Packet> {
+    let header_size = proto::Header::size().unwrap();
+    let mut readed_len = 0;
+    let mut buf = vec![0; header_size];
+    while readed_len < header_size {
+        let mut tmp_buf = vec![0; header_size - readed_len];
+        let n = match reader.read(&mut tmp_buf).await {
+            Ok(n) if n == 0 => {
+                debug!("连接断开");
+
+                return Ok(proto::Packet::new_without_data(proto::PackType::DisConnect));
+            }
+            Ok(n) => n,
+            Err(e) => {
+                error!("从客户端读取头数据出错; err = {:?}\nbuf:{:?}", e, &buf);
+                return Ok(proto::Packet::new_without_data(proto::PackType::DisConnect));
+            }
+        };
+        buf = [&buf[..readed_len as usize], &tmp_buf[..n]].concat();
+        readed_len += n;
+    }
+    debug!("收到的打包数据:{:x?}", &buf[..header_size]);
+    let header = match proto::Header::unpack(&buf[..header_size]) {
+        Ok(header) => header,
+        Err(e) => {
+            error!("failed to unpack header; err = {:?}\nbuf:{:?}", e, &buf);
+            return Ok(proto::Packet::new_without_data(proto::PackType::DisConnect));
+        }
+    };
+
+    if !header.check_flag() {
+        error!("数据头校验失败");
+        bail!("数据头校验失败")
+    }
+
+    match header.pack_type {
+        PackType::Data => {
+            let mut readed_len = 0;
+            let mut buf = vec![0; header.body_size as usize];
+            while readed_len < header.body_size {
+                let mut tmp_buf = vec![0; header.body_size as usize - readed_len as usize];
+                let n = match reader.read(&mut tmp_buf).await {
+                    Ok(n) if n == 0 => {
+                        debug!("连接断开");
+                        return Ok(proto::Packet::new_without_data(proto::PackType::DisConnect));
+                    }
+                    Ok(n) => n,
+                    Err(e) => {
+                        error!("failed to read from socket; err = {:?}", e);
+                        bail!("failed to read from socket; err = {:?}", e);
+                    }
+                };
+                buf = [&buf[..readed_len as usize], &tmp_buf[..n]].concat();
+                readed_len += n as u64;
+            }
+
+            let data = match proto::Data::unpack(&buf[..header.body_size as usize]) {
+                Ok(decoded) => decoded,
+                Err(e) => {
+                    error!("failed to unpack data; err = {:?}", e);
+                    bail!("failed to unpack data; err = {:?}", e);
+                }
+            };
+
+            proto::Packet::new(header.pack_type, Some(data)).map_err(|e| anyhow::anyhow!(e))
+        }
+        PackType::DataEnd => {
+            let mut readed_len = 0;
+            let mut buf = vec![0; header.body_size as usize];
+            while readed_len < header.body_size {
+                let mut tmp_buf = vec![0; header.body_size as usize - readed_len as usize];
+                let n = match reader.read(&mut tmp_buf).await {
+                    Ok(n) if n == 0 => {
+                        debug!("连接断开");
+                        return Ok(proto::Packet::new_without_data(proto::PackType::DisConnect));
+                    }
+                    Ok(n) => n,
+                    Err(e) => {
+                        error!("failed to read from socket; err = {:?}", e);
+                        continue;
+                    }
+                };
+                buf = [&buf[..readed_len as usize], &tmp_buf[..n]].concat();
+                readed_len += n as u64;
+            }
+            debug!("数据读取完毕");
+            Ok(proto::Packet::new_without_data(proto::PackType::DataEnd))
+        }
+        PackType::Heartbeat => {
+            debug!("收到心跳包");
+            Ok(proto::Packet::new_without_data(proto::PackType::Heartbeat))
+        }
+      
+        PackType::Login => unimplemented!("登录"),
+        PackType::Logout => unimplemented!("登出"),
+        PackType::Bind => {
+            debug!("绑定host");
+            let mut readed_len = 0;
+            let mut buf = vec![0; header.body_size as usize];
+            while readed_len < header.body_size {
+                let mut tmp_buf = vec![0; header.body_size as usize - readed_len as usize];
+                let n = match reader.read(&mut tmp_buf).await {
+                    Ok(n) if n == 0 => {
+                        debug!("连接断开");
+                        return Ok(proto::Packet::new_without_data(proto::PackType::DisConnect));
+                    }
+                    Ok(n) => n,
+                    Err(e) => {
+                        error!("failed to read from socket; err = {:?}", e);
+                        continue;
+                    }
+                };
+                buf = [&buf[..readed_len as usize], &tmp_buf[..n]].concat();
+                readed_len += n as u64;
+            }
+            let bind = match proto::Bind::unpack(&buf[..header.body_size as usize]) {
+                Ok(decoded) => decoded,
+                Err(e) => {
+                    error!("failed to unpack data; err = {:?}", e);
+                    bail!("failed to unpack data; err = {:?}", e);
+                }
+            };
+            Ok(proto::Packet::new(header.pack_type, Some(bind)).map_err(|e| anyhow::anyhow!(e))?)
+        }
+        PackType::DisConnect => {
+            debug!("主动连接断开");
+            return Ok(proto::Packet::new_without_data(proto::PackType::DisConnect));
+        }
+    }
+}
+
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -63,281 +438,12 @@ async fn main() {
     std::env::set_var("RUST_LOG", args.log_level);
     tracing_subscriber::fmt::init();
 
-    let stream = TcpStream::connect(format!("{}:{}", args.server_ip, args.server_port))
-        .await
-        .unwrap();
-
-    let users_map = Arc::new(Mutex::new(HashMap::<
-        String,
-        (Sender<Packet>, JoinHandle<()>),
-    >::new()));
-
-    // 创建一个多发送者的channel
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Packet>(1000);
-    let (mut stream_read, mut stream_write) = stream.into_split();
-
-    // 发送bind
-    let packet = Packet::new(
-        proto::PackType::Bind,
-        Some(proto::Bind {
-            host: args.host.clone(),
-        }),
-    ).unwrap();
-    let encoded = packet.pack().unwrap();
-    debug!("发送bind数据包:{:x?}", encoded);
-    if let Err(e) = stream_write.write(&encoded).await {
-        error!("发送bind数据包失败; err = {:?}", e);
-        return;
-    }
-
-    // 创建一个线程，通过rx接受数据包，收到就通过stream_write发送
-    tokio::spawn(async move {
-        while let Some(packet) = rx.recv().await {
-            let encoded = packet.pack().unwrap();
-            debug!("打包后的数据：{:x?}", encoded);
-            if let Err(e) = stream_write.write(&encoded).await {
-                error!("把客户端数据转发给用户出错; err = {:?}", e);
-                return;
-            }
-            debug!("成功把客户端的数据转发给用户");
-        }
-    });
-
-
-
-    loop {
-        // 循环读取服务端发来的数据包，解析并处理
-        debug!("等待服务端发来数据");
-        let mut readed_len = 0;
-        let header_size = proto::Header::size().unwrap();
-        let mut buf = vec![0; header_size];
-
-        while readed_len < header_size {
-            let mut tmp_buf = vec![0; header_size - readed_len];
-            let n = match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                stream_read.read(&mut tmp_buf),
-            )
-            .await
-            {
-                Ok(Ok(0)) => {
-                    debug!("Connection closed");
-                    break;
-                }
-                Ok(Ok(n)) => n,
-                Ok(Err(e)) => {
-                    error!("Failed to read from socket: {:?}", e);
-                    break;
-                }
-                Err(_) => {
-                    // 超时处理逻辑
-                    info!("Read timeout, closing connection");
-                    break;
-                }
-            };
-            debug!("读取到:{}", n);
-            buf = [&buf[..readed_len as usize], &tmp_buf[..n]].concat();
-            readed_len += n;
-            debug!(
-                "读取:readed_len:{}, header_size:{}",
-                readed_len, header_size
-            );
-        }
-        if readed_len < header_size {
-            continue;
-        }
-        debug!("读取完毕:{:x?}", &buf);
-        let header = match proto::Header::unpack(&buf[..readed_len as usize]) {
-            Ok(header) => header,
-            Err(e) => {
-                error!("failed to unpack header; err = {:?}", e);
-                continue;
-            }
-        };
-
-        if !header.check_flag() {
-            error!("数据头校验失败");
-            continue;
-        }
-
-        match header.pack_type {
-            proto::PackType::Data => {
-                let mut readed_len = 0;
-                let mut buf = vec![0; header.body_size as usize];
-                while readed_len < header.body_size {
-                    let mut tmp_buf = vec![0; header.body_size as usize - readed_len as usize];
-                    let n = match stream_read.read(&mut tmp_buf).await {
-                        Ok(n) if n == 0 => {
-                            debug!("服务端连接断开");
-                            break;
-                        }
-                        Ok(n) => n,
-                        Err(e) => {
-                            error!("failed to read from socket; err = {:?}", e);
-                            continue;
-                        }
-                    };
-                    buf = [&buf[..readed_len as usize], &tmp_buf[..n]].concat();
-                    readed_len += n as u64;
-                }
-
-                let data = match proto::Data::unpack(&buf[..readed_len as usize]) {
-                    Ok(decoded) => decoded,
-                    Err(e) => {
-                        error!("failed to unpack data; err = {:?}", e);
-                        continue;
-                    }
-                };
-
-                trace!("读取到用户数据：{:?}", String::from_utf8_lossy(&data.data));
-                debug!(
-                    "共从服务端读取到 {} 字节数据",
-                    header_size + readed_len as usize
-                );
-                let user_id = data.agent_ip_port.clone();
-                let is_contain_user_id = { users_map.clone().lock().await.contains_key(&user_id) };
-                debug!("用户：{}, 是否存在：{}", user_id, is_contain_user_id);
-                // 如果是新的连接，就建立一个线程把数据转发给本地服务，并读取本地数据返回给中转服务器
-                let users_map_clone = users_map.clone();
-                if !is_contain_user_id {
-                    let (client_tx, mut client_rx) = tokio::sync::mpsc::channel::<Packet>(1000);
-                    // 连接本地服务
-                    let stream =
-                        match TcpStream::connect(format!("{}:{}", args.ip, args.port)).await {
-                            Ok(stream) => {
-                                debug!("客户端连接成功");
-                                stream
-                            }
-                            Err(e) => {
-                                error!("连接失败; err = {:?}", e);
-                                continue;
-                            }
-                        };
-
-                    let tx_clone = tx.clone();
-                    let users_map_clone1 = users_map_clone.clone();
-                    let users_map_clone2 = users_map_clone.clone();
-                    let handle = tokio::spawn(async move {
-                        let (mut stream_read, mut stream_write) = stream.into_split();
-
-                        let h = tokio::spawn(async move {
-                            // 接收客户端来的数据，转发给本地服务
-                            while let Some(packet) = client_rx.recv().await {
-                                match packet.header.pack_type {
-                                    proto::PackType::Data => {
-                                        let decoded = match proto::Data::unpack(&packet.data) {
-                                            Ok(decoded) => decoded,
-                                            Err(e) => {
-                                                error!("failed to unpack data; err = {:?}", e);
-                                                return;
-                                            }
-                                        };
-                                        if let Err(e) = stream_write.write(&decoded.data).await {
-                                            error!("把客户端数据转发给用户出错; err = {:?}", e);
-                                            return;
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        });
-
-                        // 读取本地服务数据，发给中转服务器
-                        loop {
-                            let mut buf = vec![0; 1024 * 1024];
-                            let n = match stream_read.read(&mut buf).await {
-                                Ok(n) if n == 0 => {
-                                    debug!("客户端连接断开");
-                                    // 本地服务断开，就移除
-                                    users_map_clone1.lock().await.remove(&user_id);
-                                    break;
-                                }
-                                Ok(n) => n,
-                                Err(e) => {
-                                    error!("从客户端读取数据出错; err = {:?}", e);
-                                    // 本地服务断开，就移除
-                                    users_map_clone1.lock().await.remove(&user_id);
-                                    break;
-                                }
-                            };
-                            trace!(
-                                "从客户端读取数据完毕，转发给用户:{:?}",
-                                String::from_utf8_lossy(&buf[..n])
-                            );
-
-                            let packet = proto::Packet::new(
-                                proto::PackType::Data,
-                                Some(proto::Data {
-                                    agent_ip_port: user_id.to_string(),
-                                    host: None,
-                                    data: buf[..n].to_vec(),
-                                }),
-                            )
-                            .unwrap();
-
-                            if let Err(e) = tx_clone.send(packet).await {
-                                error!("发送数据给用户出错; err = {:?}", e);
-                                break;
-                            }
-                        }
-
-                        h.await.unwrap();
-                    });
-
-                    {
-                        users_map_clone2
-                            .lock()
-                            .await
-                            .insert(data.agent_ip_port.clone(), (client_tx, handle));
-                    }
-                }
-
-                let client_tx = {
-                    users_map
-                        .clone()
-                        .lock()
-                        .await
-                        .get(&data.agent_ip_port)
-                        .unwrap()
-                        .0
-                        .clone()
-                };
-                debug!("发送数据给客户端channel");
-                if let Err(e) = client_tx
-                    .send(Packet::new(proto::PackType::Data, Some(data)).unwrap())
-                    .await
-                {
-                    error!("发送数据给用户出错; err = {:?}", e);
-                    continue;
-                }
-            }
-            proto::PackType::DataEnd => {
-                let mut readed_len = 0;
-                let mut buf = vec![0; header.body_size as usize];
-                if header.body_size > 0 {
-                    while readed_len < header.body_size {
-                        let mut tmp_buf = vec![0; header.body_size as usize - readed_len as usize];
-                        let n = match stream_read.read(&mut tmp_buf).await {
-                            Ok(n) if n == 0 => {
-                                debug!("服务端连接断开");
-                                break;
-                            }
-                            Ok(n) => n,
-                            Err(e) => {
-                                error!("failed to read from socket; err = {:?}", e);
-                                continue;
-                            }
-                        };
-                        buf = [&buf[..readed_len as usize], &tmp_buf[..n]].concat();
-                        readed_len += n as u64;
-                    }
-                }
-                debug!("数据读取完毕");
-            }
-            _ => {
-                error!("未知的数据包类型");
-                break;
-            }
-        }
-    }
+    let mut app = App::new().await.unwrap();
+    app.run(
+        args.server_ip,
+        args.server_port,
+        args.ip,
+        args.port,
+        args.host,
+    ).await.unwrap();
 }

@@ -1,15 +1,12 @@
 use anyhow::bail;
-use clap::Parser;
-use proto::{Pack, PackType, Packet, UnPack};
-use std::collections::HashMap;
+use proto::{PackType, Packet, UnPack};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
-use tokio::time;
-use tracing::{debug, error, info, trace};
+
+use tracing::{debug, error, trace};
 
 // 用户端
 pub struct Agent {
@@ -34,6 +31,9 @@ impl Agent {
         let (mut reader, mut writer) = socket.into_split();
         let ip_port_clone = ip_port.clone();
         let h1 = tokio::spawn(async move {
+
+
+
             loop {
                 let packet = read_packet_from_socket(&mut reader, ip_port_clone.clone())
                     .await
@@ -44,6 +44,8 @@ impl Agent {
                     debug!("发送数据通道已关闭");
                     break;
                 }
+
+
                 if let Err(e) = sender_out.send(packet).await {
                     error!("发送数据失败: {:#?}", e);
                     break;
@@ -58,24 +60,21 @@ impl Agent {
         let h2 = tokio::spawn(async move {
             loop {
                 match receiver_in.recv().await {
-                    Some(packet) => {
-                        match packet.header.pack_type{
-                            PackType::DisConnect => {
-                                debug!("收到关闭连接的消息");
+                    Some(packet) => match packet.header.pack_type {
+                        PackType::DisConnect => {
+                            debug!("收到关闭连接的消息");
+                            break;
+                        }
+                        PackType::Data => {
+                            debug!("收到数据包");
+                            let data = proto::Data::unpack(&packet.data).unwrap();
+                            if let Err(e) = writer.write_all(&data.data).await {
+                                error!("socket发送数据失败: {:?}", e);
                                 break;
                             }
-                            PackType::Data => {
-                                debug!("收到数据包");
-                                let data = proto::Data::unpack(&packet.data).unwrap();
-                                if let Err(e) = writer.write_all(&data.data).await {
-                                    error!("socket发送数据失败: {:?}", e);
-                                    break;
-                                }
-                            }
-                            _ => {}
                         }
-                        
-                    }
+                        _ => {}
+                    },
                     None => {
                         break;
                     }
@@ -150,7 +149,7 @@ async fn read_packet_from_socket(
         }
     }
 
-    if header_end == 0{
+    if header_end == 0 {
         error!("异常的头信息");
         debug!("异常的头信息: {}", String::from_utf8_lossy(&buf));
         bail!("异常的头信息");
@@ -176,8 +175,6 @@ async fn read_packet_from_socket(
 
     // 如果有content-len，就读取body
     if let Some(conent_len) = conent_len {
-        
-
         // 循环读取body，保证不能多读也不能少读，还要减去上面头信息多读的部分
 
         // 这是读头信息时多读取的字节数
@@ -187,13 +184,8 @@ async fn read_packet_from_socket(
 
         debug!(
             "有body，头大小是：{}， 共读取了：{}， body大小是:{}， 还未读取长度:{}",
-            header_end,
-            header_readed_len,
-            conent_len,
-            content_left_len
+            header_end, header_readed_len, conent_len, content_left_len
         );
-
-        
 
         let mut body = vec![];
         let mut readed_len = 0;

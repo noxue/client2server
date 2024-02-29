@@ -9,7 +9,7 @@ pub enum PackType {
     Logout,
     Data,
     DataEnd,
-    Bind, // 表示绑定处理哪个域名下的数据
+    Bind,     // 表示绑定处理哪个域名下的数据
     DisConnect,
 }
 
@@ -35,7 +35,7 @@ impl Default for PackType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Packed, UnPacked)]
 pub struct Data {
     pub agent_ip_port: String, // 外网客户端id，用ip和端口号组成
-    pub host:Option<String>, // 用户发给服务端的http头信息中的host字段，用来决定数据包发给哪个客户端
+    pub host: Option<String>, // 用户发给服务端的http头信息中的host字段，用来决定数据包发给哪个客户端
     pub data: Vec<u8>,
 }
 
@@ -43,6 +43,7 @@ pub struct Data {
 pub struct Bind {
     pub host: String,
 }
+
 
 pub type Packet = packet::Packet<PackType>;
 pub type Header = packet::Header<PackType>;

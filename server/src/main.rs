@@ -1,21 +1,8 @@
-mod app;
 mod agent;
+mod app;
 mod client;
 
-use agent::Agent;
-use anyhow::bail;
 use clap::Parser;
-use client::Client;
-use proto::{Pack, PackType, Packet, UnPack};
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::Mutex;
-use tokio::time;
-use tracing::{debug, error, info, trace};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -66,7 +53,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = app::App::new().await?;
 
-    app.run(&args.server_ip, args.user_port, args.client_port).await?;
+    app.run(&args.server_ip, args.user_port, args.client_port)
+        .await?;
 
     Ok(())
 }
