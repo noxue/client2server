@@ -5,7 +5,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
-
 use tracing::{debug, error, trace};
 
 // 用户端
@@ -99,7 +98,7 @@ async fn read_packet_from_socket(
 ) -> anyhow::Result<proto::Packet> {
     // 循环读取http请求信息，直到找到\r\n\r\n
     let mut buf = vec![];
-    let header_end ;
+    let header_end;
     let mut header_readed_len = 0;
 
     // 读取可能需要修改为超时，否则可能会卡死在这里，所有读取都应该改，后面再修改
