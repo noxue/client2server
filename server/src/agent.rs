@@ -10,14 +10,10 @@ use tracing::{debug, error, trace};
 
 // 用户端
 pub struct Agent {
-    // 表示用户标识，是用户ip:port
-    ip_port: String,
     // 用于接收外部发给自己的数据
     sender: Sender<proto::Packet>,
     // 用于把自己的数据发送给外部
     receiver: Arc<Mutex<Receiver<proto::Packet>>>,
-    // 保存线程句柄
-    handles: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Agent {
@@ -30,10 +26,7 @@ impl Agent {
 
         let (mut reader, mut writer) = socket.into_split();
         let ip_port_clone = ip_port.clone();
-        let h1 = tokio::spawn(async move {
-
-
-
+        tokio::spawn(async move {
             loop {
                 let packet = read_packet_from_socket(&mut reader, ip_port_clone.clone())
                     .await
@@ -44,7 +37,6 @@ impl Agent {
                     debug!("发送数据通道已关闭");
                     break;
                 }
-
 
                 if let Err(e) = sender_out.send(packet).await {
                     error!("发送数据失败: {:#?}", e);
@@ -57,7 +49,7 @@ impl Agent {
             }
         });
 
-        let h2 = tokio::spawn(async move {
+        tokio::spawn(async move {
             loop {
                 match receiver_in.recv().await {
                     Some(packet) => match packet.header.pack_type {
@@ -83,22 +75,11 @@ impl Agent {
         });
 
         let agent = Agent {
-            ip_port,
             sender,
             receiver: Arc::new(Mutex::new(receiver)),
-            handles: vec![h1, h2],
         };
 
         Ok(agent)
-    }
-
-    /// 等待线程任务结束
-    pub async fn wait(&mut self) {
-        for handle in self.handles.drain(..) {
-            if let Err(e) = handle.await {
-                error!("线程执行失败: {:?}", e);
-            }
-        }
     }
 
     /// 获取发送数据给 Agent 的通道
@@ -118,7 +99,7 @@ async fn read_packet_from_socket(
 ) -> anyhow::Result<proto::Packet> {
     // 循环读取http请求信息，直到找到\r\n\r\n
     let mut buf = vec![];
-    let mut header_end = 0;
+    let header_end ;
     let mut header_readed_len = 0;
 
     // 读取可能需要修改为超时，否则可能会卡死在这里，所有读取都应该改，后面再修改

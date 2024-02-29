@@ -2,20 +2,8 @@ mod app;
 mod client;
 mod service;
 
-use anyhow::bail;
 use app::App;
 use clap::Parser;
-use proto::{Pack, PackType, Packet, UnPack};
-use std::{collections::HashMap, sync::Arc};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-    sync::{
-        mpsc::{Receiver, Sender},
-        Mutex,
-    },
-};
-use tracing::{debug, error};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]

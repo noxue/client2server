@@ -224,7 +224,7 @@ impl App {
         socket: TcpStream,
         addr: std::net::SocketAddr,
     ) -> anyhow::Result<()> {
-        let client = Client::new(addr.to_string(), socket).await?;
+        let client = Client::new(socket).await?;
         let receiver = client.receiver();
 
         {

@@ -10,18 +10,14 @@ use tracing::{debug, error};
 
 // 客户端
 pub struct Client {
-    // 指定该客户端要处理哪些host请求
-    host: String,
     // 用于接收外部发给自己的数据
     sender: Sender<proto::Packet>,
     // 用于把自己的数据发送给外部
     receiver: Arc<Mutex<Receiver<proto::Packet>>>,
-    // 保存线程句柄
-    handles: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Client {
-    pub async fn new(host: String, socket: TcpStream) -> anyhow::Result<Self> {
+    pub async fn new(socket: TcpStream) -> anyhow::Result<Self> {
         // receiver_in 接收发进来的数据，所以把sender传出去，给别人发送数据
         let (sender, mut receiver_in) = tokio::sync::mpsc::channel::<proto::Packet>(100);
 
@@ -29,7 +25,7 @@ impl Client {
         let (sender_out, receiver) = tokio::sync::mpsc::channel::<proto::Packet>(100);
 
         let (mut reader, mut writer) = socket.into_split();
-        let h1 = tokio::spawn(async move {
+        tokio::spawn(async move {
             loop {
                 let packet = read_packet_from_socket(&mut reader).await.unwrap();
                 // 把收到的数据解析成packet，发给app处理
@@ -40,7 +36,7 @@ impl Client {
             }
         });
 
-        let h2 = tokio::spawn(async move {
+        tokio::spawn(async move {
             loop {
                 match receiver_in.recv().await {
                     Some(packet) => {
@@ -58,22 +54,11 @@ impl Client {
         });
 
         let client = Client {
-            host,
             sender,
             receiver: Arc::new(Mutex::new(receiver)),
-            handles: vec![h1, h2],
         };
 
         Ok(client)
-    }
-
-    /// 等待线程任务结束
-    pub async fn wait(&mut self) {
-        for handle in self.handles.drain(..) {
-            if let Err(e) = handle.await {
-                error!("线程执行失败: {:?}", e);
-            }
-        }
     }
 
     /// 获取发送数据给 Client 的通道

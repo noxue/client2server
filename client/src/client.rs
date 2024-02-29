@@ -1,7 +1,6 @@
 use anyhow::bail;
-use clap::Parser;
 use proto::{Pack, PackType, Packet, UnPack};
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -11,6 +10,7 @@ use tokio::{
     },
 };
 use tracing::{debug, error};
+
 pub struct Client {
     sender: Sender<Packet>,
     receiver: Arc<Mutex<Receiver<Packet>>>,
