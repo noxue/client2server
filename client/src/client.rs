@@ -9,7 +9,7 @@ use tokio::{
         Mutex,
     },
 };
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 pub struct Client {
     sender: Sender<Packet>,
@@ -38,6 +38,10 @@ impl Client {
         tokio::spawn(async move {
             loop {
                 let packet = read_packet_from_socket(&mut reader).await.unwrap();
+                if packet.header.pack_type == PackType::DisConnect {
+                    info!("服务端程序已关闭");
+                    break;
+                }
                 if let Err(e) = sender_out.send(packet).await {
                     error!("发送数据失败: {:?}", e);
                     break;
@@ -87,7 +91,6 @@ async fn read_packet_from_socket(
         let n = match reader.read(&mut tmp_buf).await {
             Ok(n) if n == 0 => {
                 debug!("连接断开");
-
                 return Ok(proto::Packet::new_without_data(proto::PackType::DisConnect));
             }
             Ok(n) => n,

@@ -2,7 +2,7 @@ use crate::{client::Client, service::Service};
 use proto::{PackType, UnPack};
 use std::{collections::HashMap, sync::Arc};
 use tokio::{net::TcpStream, sync::Mutex};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 pub struct App {
     services: Arc<Mutex<HashMap<String, Service>>>,
@@ -28,7 +28,15 @@ impl App {
         host: String,
     ) -> anyhow::Result<()> {
         let server_addr = format!("{}:{}", server_ip, server_port);
-        let socket = TcpStream::connect(server_addr).await?;
+        let socket = match TcpStream::connect(&server_addr).await {
+            Ok(socket) => socket,
+            Err(e) => {
+                error!("连接服务器失败: {:?}", e);
+                return Err(anyhow::anyhow!("连接服务器失败"));
+            }
+        };
+        info!("连接服务器成功: {:?}", server_addr);
+
         let client = Client::new(host, socket).await?;
         let client_sender = client.sender().await;
         let client_receiver = client.receiver().await;
@@ -46,12 +54,11 @@ impl App {
                 match packet.header.pack_type {
                     PackType::Data => {
                         let data = proto::Data::unpack(&packet.data).unwrap();
-
-                        // let services = services.clone();
                         let mut services = services.lock().await;
                         // 如果是新的客户，创建一个服务
                         if !services.contains_key(&data.agent_ip_port) {
                             let service_addr = format!("{}:{}", ip, port);
+                            info!("来自 {:?} 的新请求", &data.agent_ip_port);
                             let service_socket = TcpStream::connect(service_addr).await.unwrap();
                             let service = Service::new(data.agent_ip_port.clone(), service_socket)
                                 .await

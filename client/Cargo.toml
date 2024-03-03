@@ -12,3 +12,10 @@ tracing-subscriber = "*"
 proto = { path = "../proto" }
 clap = { version = "4", features = ["derive"] }
 anyhow="1"
+
+
+[profile.release]
+debug = false  # 去除调试信息
+opt-level = "z"  # 对于大小进行优化，还可以选择 "s" 仅仅优化大小，"z" 在保证性能的同时尽可能减小体积
+lto = true  # 启用链接时优化（LTO）来进一步减小体积和提高性能
+codegen-units = 1  # 提高编译优化级别，可能会增加编译时间
